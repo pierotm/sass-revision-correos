@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.env
+.pytest_cache/
+.coverage
+
+# Docker
+.docker_data/
+postgres_data/
+
+# Storage (Sensitive & Large files)
+storage/documents/*
+storage/screenshots/*
+storage/exports/*
+!storage/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Angular / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.angular/
+.npm/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# OS
+.DS_Store
+Thumbs.db

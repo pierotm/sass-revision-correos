@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: osorio-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-osorio_platform}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: backend-api/Dockerfile
+    container_name: osorio-api
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-osorio_platform}
+      SECRET_KEY: ${SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    volumes:
+      - ./storage:/app/storage
+      - ./shared:/app/shared
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+      - ./backend-api:/app/backend-api
+
+  worker:
+    build:
+      context: .
+      dockerfile: automation-worker/Dockerfile
+    container_name: osorio-worker
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-osorio_platform}
+      SECRET_KEY: ${SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+    depends_on:
+      - db
+    volumes:
+      - ./storage:/app/storage
+      - ./shared:/app/shared
+      - ./automation-worker:/app/automation-worker
+
+volumes:
+  postgres_data:
