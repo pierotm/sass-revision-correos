@@ -43,12 +43,14 @@ services:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-osorio_platform}
       SECRET_KEY: ${SECRET_KEY}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      PYTHONPATH: /app:/app/shared:/app/backend-api
     depends_on:
       - db
     volumes:
       - ./storage:/app/storage
       - ./shared:/app/shared
       - ./automation-worker:/app/automation-worker
+      - ./backend-api:/app/backend-api
 
 volumes:
   postgres_data:

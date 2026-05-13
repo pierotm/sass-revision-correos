@@ -20,8 +20,9 @@ class Company(Base):
     ruc = Column(String(11), unique=True, nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    last_checked_at = Column(DateTime, nullable=True)
     
-    credentials = relationship("Credential", back_populates="company", cascade="all, delete-orphan")
+    credentials = relationship("Credential", back_populates="company", cascade="all, delete-orphan", uselist=False)
     executions = relationship("Execution", back_populates="company")
 
 class Credential(Base):
