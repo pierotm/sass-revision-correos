@@ -1,131 +1,103 @@
+import asyncio
 import logging
 from playwright.async_api import async_playwright
-from shared.security import SecurityManager
-from typing import Dict, Any
+from shared.security import security_manager
+from datetime import datetime
+import os
+import traceback
+import hashlib
 
 logger = logging.getLogger(__name__)
 
 class SunatService:
     def __init__(self):
-        self.security = SecurityManager()
         self.login_url = "https://e-menu.sunat.gob.pe/cl-ti-itmenu/MenuInternet.htm"
 
-    async def test_connection(self, ruc: str, user: str, password_encrypted: str) -> Dict[str, Any]:
-        """
-        Attempts to login to SUNAT to verify credentials.
-        """
-        password = self.security.decrypt(password_encrypted)
-        
-        async with async_playwright() as p:
-            # Enhanced evasion
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
-                viewport={"width": 1920, "height": 1080}
-            )
-            page = await context.new_page()
-            
-            # Stealth: Add extra headers
-            await page.set_extra_http_headers({
-                "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
-            })
-            
+    async def _get_browser(self):
+        pw = await async_playwright().start()
+        browser = await pw.chromium.launch(headless=True)
+        context = await browser.new_context(
+            viewport={'width': 1280, 'height': 800},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
+        return browser, page
+
+    async def test_connection(self, ruc: str, user: str, password_encrypted: str):
+        max_attempts = 2
+        last_result = {"success": False, "message": "No attempts made"}
+
+        for attempt in range(1, max_attempts + 1):
+            browser, page = await self._get_browser()
             try:
-                logger.info(f"Navigating to SUNAT login: {self.login_url}")
-                await page.goto(self.login_url, wait_until="networkidle", timeout=60000)
+                # 0. Decrypt password
+                password = security_manager.decrypt_password(password_encrypted)
                 
-                # Debug screenshot
-                debug_path = f"/app/storage/screenshots/debug_load_{ruc}.png"
-                await page.screenshot(path=debug_path)
-                logger.info(f"Debug screenshot saved to {debug_path}")
+                # 1. Login with 45s timeout
+                logger.info(f"Attempt {attempt}/{max_attempts} - Navigating to SUNAT login...")
+                await page.goto(self.login_url, wait_until="networkidle", timeout=45000)
                 
-                logger.info(f"Page loaded. Filling credentials for RUC {ruc}...")
-                # Real selectors identified:
                 await page.fill("#txtRuc", ruc)
-                await page.wait_for_timeout(800) # Small pause
-                
                 await page.fill("#txtUsuario", user)
-                await page.wait_for_timeout(1000) # Small pause
-                
                 await page.fill("#txtContrasena", password)
-                await page.wait_for_timeout(1500) # Wait before clicking
                 
                 logger.info("Clicking Accept...")
                 await page.click("#btnAceptar")
                 
-                logger.info("Waiting for SUNAT response and navigating to Mailbox...")
-                # 1. Click on Buzón Electrónico (Top Header) - Use text for robustness
-                await page.wait_for_selector("text='Buzón Electrónico'", timeout=20000)
-                await page.click("text='Buzón Electrónico'")
+                # 2. Navigation to Mailbox (Critical Step 45s)
+                logger.info("Navigating to Mailbox...")
+                try:
+                    async with page.expect_popup(timeout=20000) as popup_info:
+                        await page.click("text='Buzón Electrónico'", force=True)
+                    page = await popup_info.value
+                    logger.info("New tab detected, switching context...")
+                except:
+                    logger.info("Staying in current page.")
                 
+                # 3. Entering Iframe (Critical Step 45s)
                 logger.info("Entering Mailbox Iframe...")
-                # 2. Wait for the iframe to load and switch context
-                # Sometimes it takes a while to appear
-                iframe_element = await page.wait_for_selector("iframe[name='iframeApplication']", timeout=30000)
+                await page.wait_for_load_state("networkidle", timeout=45000)
+                iframe_element = await page.wait_for_selector("iframe[name='iframeApplication']", timeout=45000)
                 frame = page.frame(name="iframeApplication")
                 
                 if not frame:
-                    # Fallback if name is not set correctly
-                    frame = await iframe_element.content_frame()
-                
-                # 3. Inside the frame, navigate to Buzón Notificaciones
-                logger.info("Navigating to Buzón Notificaciones inside iframe...")
-                await frame.wait_for_timeout(2000) # Give scripts time to initialize
+                    raise Exception("iframeApplication NOT found")
+
+                # 4. Deep Navigation (Critical Step 45s)
+                logger.info("Opening Buzón Notificaciones...")
+                await frame.wait_for_timeout(2000)
                 await frame.click("text=Buzón Notificaciones")
                 
-                # 4. Extract the first notification
-                logger.info("Waiting for notification list content...")
-                # Wait explicitly for the text 'ASUNTO:' to appear inside the list
-                await frame.wait_for_selector("text=/ASUNTO:/i", timeout=20000)
+                await frame.wait_for_selector("text=/ASUNTO:/i", timeout=45000)
                 
-                # Identify the first notification item
                 items = await frame.query_selector_all("text=/ASUNTO:/i")
-                if not items:
-                    raise Exception("No notifications found with 'ASUNTO:' text after waiting")
-                
                 asunto_text = await items[0].inner_text()
-                # Extract subject and date from text if possible
                 asunto = asunto_text.split("\n")[0] if "\n" in asunto_text else asunto_text
 
-                # Click to open the detail (usually the parent or the text itself)
                 await items[0].click()
-                await frame.wait_for_timeout(3000) # Wait for detail panel
+                await frame.wait_for_timeout(3000) 
                 
-                # 5. Download the PDF
+                # 5. Download (Critical Step 45s)
                 logger.info("Triggering PDF download...")
-                pdf_link = await frame.wait_for_selector("a:has-text('constancia_')", timeout=10000)
+                pdf_link = await frame.wait_for_selector("a:has-text('constancia_')", timeout=45000)
                 async with page.expect_download() as download_info:
                     await pdf_link.click()
                 
                 download = await download_info.value
-                
-                # Define local path
                 doc_dir = f"/app/storage/documents/{ruc}"
-                import os
                 os.makedirs(doc_dir, exist_ok=True)
                 
                 filename = download.suggested_filename
                 file_path = os.path.join(doc_dir, filename)
                 await download.save_as(file_path)
                 
-                # 6. Calculate Hash and Validate PDF
-                import hashlib
                 sha256_hash = hashlib.sha256()
                 with open(file_path, "rb") as f:
                     content = f.read()
                     sha256_hash.update(content)
-                
                 file_hash = sha256_hash.hexdigest()
                 
-                # Validate PDF magic number (%PDF-)
-                is_pdf = content.startswith(b"%PDF-")
-                
-                if not is_pdf:
-                    logger.error(f"Downloaded file is NOT a PDF: {filename}")
-                    return {"success": False, "message": "Downloaded file is invalid (not a PDF)"}
-
-                logger.info(f"Download successful: {filename} (Hash: {file_hash[:10]}...)")
-                
+                logger.info(f"SUCCESS on attempt {attempt}: {filename}")
                 return {
                     "success": True, 
                     "message": "File download successful",
@@ -137,17 +109,37 @@ class SunatService:
                         "size": len(content)
                     }
                 }
-                
+
             except Exception as e:
-                # Capture screenshot on failure
-                import os
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                screenshot_path = f"/app/storage/screenshots/error_deep_{ruc}_{timestamp}.png"
-                await page.screenshot(path=screenshot_path)
-                logger.error(f"Deep navigation error: {str(e)}. Screenshot: {screenshot_path}")
-                return {"success": False, "message": f"Deep navigation failed: {str(e)}"}
+                error_msg = str(e)
+                error_type = "UNKNOWN"
+                if "Timeout" in error_msg:
+                    if "iframeApplication" in error_msg: error_type = "IFRAME_TIMEOUT"
+                    elif "Buzón" in error_msg: error_type = "LOGIN_REDIRECT_TIMEOUT"
+                    else: error_type = "NETWORK_TIMEOUT"
+                elif "selector" in error_msg.lower(): error_type = "SELECTOR_NOT_FOUND"
+                
+                logger.warning(f"Attempt {attempt} failed [{error_type}]: {error_msg}")
+                
+                # Screenshot on final failure or unknown error
+                if attempt == max_attempts or error_type == "UNKNOWN":
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    screenshot_path = f"/app/storage/screenshots/error_deep_{ruc}_{timestamp}.png"
+                    await page.screenshot(path=screenshot_path)
+                    
+                    last_result = {
+                        "success": False, 
+                        "error_type": error_type,
+                        "message": error_msg,
+                        "stack_trace": traceback.format_exc(),
+                        "screenshot_path": screenshot_path
+                    }
+                else:
+                    logger.info("Waiting 10s for backoff...")
+                    await asyncio.sleep(10)
             finally:
                 await browser.close()
+        
+        return last_result
 
 sunat_service = SunatService()

@@ -32,6 +32,7 @@ services:
       - ./migrations:/app/migrations
       - ./alembic.ini:/app/alembic.ini
       - ./backend-api:/app/backend-api
+      - ./scripts:/app/scripts
 
   worker:
     build:
@@ -43,7 +44,7 @@ services:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-osorio_platform}
       SECRET_KEY: ${SECRET_KEY}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-      PYTHONPATH: /app:/app/shared:/app/backend-api
+      PYTHONPATH: /app:/app/backend-api
     depends_on:
       - db
     volumes:

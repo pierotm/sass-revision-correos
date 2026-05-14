@@ -24,8 +24,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 from shared.models import Company, Credential, Execution, Notification, Document, ExecutionStatus, WorkerStatus
 from app.services.sunat import sunat_service # Reusing the validated service
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import time
+
 async def run_worker_cycle():
-    logger.info("Starting Worker Cycle v1 (One-Shot)")
+    start_time = time.time()
+    logger.info("--- Starting Automation Cycle ---")
     db = SessionLocal()
     
     try:
@@ -43,20 +47,22 @@ async def run_worker_cycle():
         company = db.query(Company).filter(Company.is_active == True).order_by(Company.last_checked_at.asc().nulls_first()).first()
         
         if not company:
-            logger.info("No active companies found to process.")
+            logger.info("No active companies found to process. Sleeping until next tick.")
             return
 
+        logger.info(f"Picked company for this cycle: {company.name} (RUC {company.ruc})")
+        # ... (rest of the logic remains similar but wrapped in logs)
+        
         if not company.credentials:
-            logger.warning(f"Company {company.name} (RUC {company.ruc}) has no credentials. Skipping.")
-            company.last_checked_at = datetime.utcnow() # Mark so it doesn't get stuck
+            logger.warning(f"Company {company.name} has no credentials. Skipping.")
+            company.last_checked_at = datetime.utcnow()
             db.commit()
             return
 
-        logger.info(f"Processing company: {company.name} (RUC {company.ruc})")
-        worker_status.current_job = f"Scraping {company.ruc}"
+        worker_status.current_job = f"Processing {company.ruc}"
         db.commit()
 
-        # 3. Create Execution record
+        # Create Execution
         execution = Execution(
             company_id=company.id,
             status=ExecutionStatus.RUNNING,
@@ -66,7 +72,7 @@ async def run_worker_cycle():
         db.commit()
         db.refresh(execution)
 
-        # 4. Run the scraper
+        # Run the scraper
         result = await sunat_service.test_connection(
             ruc=company.ruc,
             user=company.credentials.sol_user,
@@ -74,10 +80,10 @@ async def run_worker_cycle():
         )
 
         if result["success"]:
-            logger.info(f"Scrape successful for {company.ruc}")
+            logger.info(f"Cycle SUCCESS for {company.ruc}")
             execution.status = ExecutionStatus.SUCCESS
             
-            # Create Notification and Document records
+            # Persist documents (reusing previous logic)
             notif_data = result.get("data", {})
             import uuid
             notification = Notification(
@@ -100,21 +106,48 @@ async def run_worker_cycle():
             company.last_checked_at = datetime.utcnow()
             worker_status.jobs_processed += 1
         else:
-            logger.error(f"Scrape failed for {company.ruc}: {result['message']}")
+            logger.error(f"Cycle FAILED for {company.ruc}: {result['message']}")
             execution.status = ExecutionStatus.FAILED
             execution.error_message = result["message"]
-            company.last_checked_at = datetime.utcnow() # Still mark to move to next in queue
+            execution.screenshot_path = result.get("screenshot_path")
+            
+            # Create a detailed ErrorLog
+            from shared.models import ErrorLog
+            error_log = ErrorLog(
+                execution_id=execution.id,
+                error_type=result.get("error_type", "UNKNOWN"),
+                message=result.get("message"),
+                stack_trace=result.get("stack_trace")
+            )
+            db.add(error_log)
+            
+            company.last_checked_at = datetime.utcnow()
 
         execution.finished_at = datetime.utcnow()
+        duration = time.time() - start_time
         worker_status.current_job = "Idle"
         db.commit()
-        logger.info(f"Worker cycle finished for {company.ruc}")
+        logger.info(f"--- Cycle Finished. Duration: {duration:.2f}s ---")
 
     except Exception as e:
-        logger.error(f"Worker error: {str(e)}")
+        logger.error(f"Critical Worker error: {str(e)}")
         db.rollback()
     finally:
         db.close()
 
+async def main():
+    logger.info("Automation Worker v2 started with APScheduler")
+    scheduler = AsyncIOScheduler()
+    # Schedule every 5 minutes
+    scheduler.add_job(run_worker_cycle, 'interval', minutes=5, next_run_time=datetime.now())
+    scheduler.start()
+    
+    # Keep the process alive
+    try:
+        while True:
+            await asyncio.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Worker shutting down...")
+
 if __name__ == "__main__":
-    asyncio.run(run_worker_cycle())
+    asyncio.run(main())

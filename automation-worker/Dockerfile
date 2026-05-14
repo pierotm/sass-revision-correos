@@ -23,4 +23,4 @@ COPY shared/ ./shared/
 # Add current directory to PYTHONPATH
 ENV PYTHONPATH=/app
 
-CMD ["python", "automation-worker/app/main.py"]
+CMD ["python", "automation-worker/worker_app/main.py"]

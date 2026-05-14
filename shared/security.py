@@ -22,7 +22,8 @@ class SecurityManager:
         """Decrypts a token string and returns the original string."""
         return self.fernet.decrypt(token.encode() if isinstance(token, str) else token).decode()
 
-# Example usage:
-# manager = SecurityManager()
-# encrypted = manager.encrypt("my_secret_password")
-# decrypted = manager.decrypt(encrypted)
+    def decrypt_password(self, token: str) -> str:
+        """Alias for decrypt to maintain compatibility."""
+        return self.decrypt(token)
+
+security_manager = SecurityManager()
