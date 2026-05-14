@@ -54,10 +54,10 @@ class SunatService:
                 except:
                     logger.info("Staying in current page.")
                 
-                # 3. Entering Iframe (Critical Step 45s)
+                # 3. Entering Iframe (Critical Step 60s)
                 logger.info("Entering Mailbox Iframe...")
-                await page.wait_for_load_state("networkidle", timeout=45000)
-                iframe_element = await page.wait_for_selector("iframe[name='iframeApplication']", timeout=45000)
+                await page.wait_for_load_state("networkidle", timeout=60000)
+                iframe_element = await page.wait_for_selector("iframe[name='iframeApplication']", timeout=60000)
                 frame = page.frame(name="iframeApplication")
                 
                 if not frame:
