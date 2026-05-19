@@ -23,6 +23,9 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # Note: PYTHONPATH should be configured to include /app/backend-api and /app/shared
 from shared.models import Company, Credential, Execution, Notification, Document, ExecutionStatus, WorkerStatus
 from app.services.sunat import sunat_service # Reusing the validated service
+from shared.services.email_service import email_service
+
+TARGET_EMAIL = os.getenv("NOTIFICATION_EMAIL_TO", "test@example.com")
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import time
@@ -102,7 +105,27 @@ async def run_worker_cycle():
                 file_hash=notif_data.get("file_hash")
             )
             db.add(document)
+            db.flush() # Ensure document gets an ID if needed
             
+            # Delivery Phase
+            if not document.is_notified:
+                try:
+                    logger.info(f"Attempting to send email notification for {document.filename}...")
+                    success = email_service.send_notification_email(
+                        to_email=TARGET_EMAIL,
+                        company_name=company.name,
+                        ruc=company.ruc,
+                        file_path=document.file_path,
+                        original_subject=notification.title
+                    )
+                    if success:
+                        document.is_notified = True
+                        document.notified_at = datetime.utcnow()
+                        logger.info("Email sent and document marked as notified.")
+                except Exception as e:
+                    logger.error(f"Email delivery failed: {str(e)}")
+                    # We do not fail the cycle, just log it. The document remains is_notified=False.
+
             company.last_checked_at = datetime.utcnow()
             worker_status.jobs_processed += 1
         else:

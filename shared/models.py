@@ -74,6 +74,8 @@ class Document(Base):
     filename = Column(String(255))
     file_path = Column(String(255))
     file_hash = Column(String(64)) # SHA-256 for idempotency
+    is_notified = Column(Boolean, default=False)
+    notified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     notification = relationship("Notification", back_populates="documents")

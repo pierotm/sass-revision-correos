@@ -18,10 +18,10 @@ services:
       dockerfile: backend-api/Dockerfile
     container_name: osorio-api
     restart: always
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-osorio_platform}
-      SECRET_KEY: ${SECRET_KEY}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
     ports:
       - "8000:8000"
     depends_on:
@@ -40,10 +40,10 @@ services:
       dockerfile: automation-worker/Dockerfile
     container_name: osorio-worker
     restart: always
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-osorio_platform}
-      SECRET_KEY: ${SECRET_KEY}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       PYTHONPATH: /app:/app/backend-api
     depends_on:
       - db
