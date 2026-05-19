@@ -28,9 +28,12 @@ class EmailService:
             )
             self.service = build('gmail', 'v1', credentials=self.creds)
 
-    def send_notification_email(self, to_email: str, company_name: str, ruc: str, file_path: str, original_subject: str):
+    def send_notification_email(self, to_email: str, company_name: str, ruc: str, file_paths: list[str] | str, original_subject: str):
         if not self.service:
             raise Exception("EmailService is not properly configured with Google Credentials.")
+
+        if isinstance(file_paths, str):
+            file_paths = [file_paths]
 
         try:
             message = EmailMessage()
@@ -46,26 +49,34 @@ Empresa: {company_name}
 RUC: {ruc}
 Asunto Original: {original_subject}
 
-El documento adjunto contiene la constancia descargada.
+Los documentos adjuntos contienen la constancia y archivos descargados.
 """
+            # Check for missing files first to update body
+            missing_files = []
+            valid_paths = []
+            for path in file_paths:
+                if os.path.exists(path):
+                    valid_paths.append(path)
+                else:
+                    logger.warning(f"Attachment file not found at {path}")
+                    missing_files.append(os.path.basename(path))
+
+            if missing_files:
+                body_text += f"\n\n[ADVERTENCIA]: No se pudieron adjuntar los siguientes archivos porque no se encontraron en el disco: {', '.join(missing_files)}"
+
             message.set_content(body_text.strip())
 
-            # Attachment
-            if os.path.exists(file_path):
-                # Guess mimetype
-                mime_type, _ = mimetypes.guess_type(file_path)
+            # Now add all valid attachments
+            for path in valid_paths:
+                mime_type, _ = mimetypes.guess_type(path)
                 mime_type = mime_type or 'application/octet-stream'
                 main_type, sub_type = mime_type.split('/', 1)
 
-                with open(file_path, "rb") as f:
+                with open(path, "rb") as f:
                     file_data = f.read()
 
-                filename = os.path.basename(file_path)
+                filename = os.path.basename(path)
                 message.add_attachment(file_data, maintype=main_type, subtype=sub_type, filename=filename)
-            else:
-                logger.warning(f"Attachment file not found at {file_path}")
-                body_text += "\n\n[ADVERTENCIA]: No se pudo adjuntar el archivo PDF porque no se encontró en el disco."
-                message.set_content(body_text.strip())
 
             # Encode the message
             encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()

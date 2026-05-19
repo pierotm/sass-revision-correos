@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 import traceback
 import hashlib
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -79,34 +80,146 @@ class SunatService:
                 
                 # 5. Download (Critical Step 45s)
                 logger.info("Triggering PDF download...")
-                pdf_link = await frame.wait_for_selector("a:has-text('constancia_')", timeout=45000)
-                async with page.expect_download() as download_info:
-                    await pdf_link.click()
                 
-                download = await download_info.value
+                # Resilient extraction of attachment links
+                # We find all <a> links and check if they either point to the download endpoint
+                # OR if their text matches the pattern of a SUNAT attachment (like a purely numeric resolution ID or 'constancia_')
+                all_links = await frame.query_selector_all("a")
+                logger.info(f"Found {len(all_links)} total links in iframe.")
+                
+                download_candidates = []
+                for el in all_links:
+                    text = (await el.inner_text() or "").strip()
+                    href = (await el.get_attribute("href") or "").strip()
+                    onclick = (await el.get_attribute("onclick") or "").strip()
+                    
+                    has_digits_id = bool(re.search(r'\d{8,}', text)) and " " not in text
+                    
+                    is_candidate = (
+                        "/visor/bajarArchivo/" in href or
+                        "/visor/bajarArchivo/" in onclick or
+                        "constancia_" in text.lower() or
+                        has_digits_id
+                    )
+                    
+                    # Avoid navigation links that might be numeric but are pagination (though unlikely to have 8 digits)
+                    if is_candidate and not any(word in text.lower() for word in ["volver", "imprimir", "salir", "ayuda", "asunto"]):
+                        # Provide a fallback name if text is empty
+                        if not text:
+                            text = href.split("/")[-1] if href else "documento_adjunto"
+                        download_candidates.append((el, text))
+                
+                # EXTRACT MAIN RESOLUTION FROM IFRAME
+                # The main document (like a Resolución) is often embedded in an iframe named "contenedorMensaje"
+                # instead of being listed as a regular <a> link. We can extract its id_archivo from the src attribute
+                # and generate a standard download link.
+                try:
+                    iframe_el = await frame.query_selector("#contenedorMensaje")
+                    if iframe_el:
+                        src = await iframe_el.get_attribute("src")
+                        if src and "id_archivo" in src:
+                            import urllib.parse
+                            
+                            # The src usually contains URL-encoded JSON in a "datos" parameter
+                            decoded_src = urllib.parse.unquote(src)
+                            id_match = re.search(r'"id_archivo"\s*:\s*"(\d+)"', decoded_src)
+                            doc_match = re.search(r'"num_doc"\s*:\s*"([^"]+)"', decoded_src)
+                            
+                            if id_match:
+                                id_archivo = id_match.group(1)
+                                num_doc = doc_match.group(1) if doc_match else f"resolucion_{id_archivo}"
+                                
+                                # Reconstruct standard download URL
+                                dl_url = f"/ol-ti-itvisornoti/visor/bajarArchivo/{id_archivo}/0/0/{ruc}"
+                                
+                                # Inject hidden link into the DOM so Playwright can click it
+                                link_id = f"hidden-dl-{id_archivo}"
+                                js_code = f"""() => {{
+                                    if (!document.getElementById('{link_id}')) {{
+                                        const a = document.createElement('a');
+                                        a.href = '{dl_url}';
+                                        a.id = '{link_id}';
+                                        a.innerText = '{num_doc}';
+                                        document.body.appendChild(a);
+                                    }}
+                                }}"""
+                                await frame.evaluate(js_code)
+                                
+                                injected_link = await frame.query_selector(f"#{link_id}")
+                                if injected_link:
+                                    download_candidates.append((injected_link, num_doc))
+                                    logger.info(f"Extracted main resolution from iframe: {num_doc} (id: {id_archivo})")
+                except Exception as e:
+                    logger.warning(f"Could not extract main resolution from iframe: {str(e)}")
+
+                logger.info(f"Identified {len(download_candidates)} candidate download links.")
+                
+                downloaded_files = []
                 doc_dir = f"/app/storage/documents/{ruc}"
                 os.makedirs(doc_dir, exist_ok=True)
                 
-                filename = download.suggested_filename
-                file_path = os.path.join(doc_dir, filename)
-                await download.save_as(file_path)
+                for idx, (link, text) in enumerate(download_candidates):
+                    logger.info(f"Attempting download for candidate {idx + 1}/{len(download_candidates)} ('{text}')...")
+                    try:
+                        # Short timeout to see if it triggers a download
+                        async with page.expect_download(timeout=5000) as download_info:
+                            await link.click()
+                        download = await download_info.value
+                        
+                        temp_filename = download.suggested_filename
+                        temp_file_path = os.path.join(doc_dir, f"temp_{temp_filename}")
+                        await download.save_as(temp_file_path)
+                        
+                        # Validate the file content starts with %PDF- (checking the PDF magic number)
+                        is_valid_pdf = False
+                        header = b""
+                        if os.path.exists(temp_file_path) and os.path.getsize(temp_file_path) > 0:
+                            with open(temp_file_path, "rb") as f:
+                                header = f.read(5)
+                                if header.startswith(b"%PDF-"):
+                                    is_valid_pdf = True
+                                    
+                        if is_valid_pdf:
+                            final_filename = temp_filename
+                            final_file_path = os.path.join(doc_dir, final_filename)
+                            # Rename to final location
+                            if os.path.exists(final_file_path):
+                                os.remove(final_file_path)
+                            os.rename(temp_file_path, final_file_path)
+                            
+                            # Calculate SHA256 hash
+                            sha256_hash = hashlib.sha256()
+                            with open(final_file_path, "rb") as f:
+                                content = f.read()
+                                sha256_hash.update(content)
+                            file_hash = sha256_hash.hexdigest()
+                            
+                            downloaded_files.append({
+                                "filename": final_filename,
+                                "file_path": final_file_path,
+                                "file_hash": file_hash,
+                                "size": len(content)
+                            })
+                            logger.info(f"SUCCESS: Downloaded and verified PDF: {final_filename} ({len(content)} bytes)")
+                        else:
+                            logger.warning(f"Skipping file '{temp_filename}': Not a valid PDF (header: {header})")
+                            if os.path.exists(temp_file_path):
+                                os.remove(temp_file_path)
+                                
+                    except Exception as ex:
+                        # Log warning but do not break the whole download phase
+                        logger.warning(f"Candidate {idx + 1} did not trigger download or failed: {str(ex)}")
+                        
+                if not downloaded_files:
+                    raise Exception("No valid PDF documents were downloaded from the notification.")
                 
-                sha256_hash = hashlib.sha256()
-                with open(file_path, "rb") as f:
-                    content = f.read()
-                    sha256_hash.update(content)
-                file_hash = sha256_hash.hexdigest()
-                
-                logger.info(f"SUCCESS on attempt {attempt}: {filename}")
+                logger.info(f"SUCCESS on attempt {attempt}: Downloaded {len(downloaded_files)} files.")
                 return {
                     "success": True, 
                     "message": "File download successful",
                     "data": {
                         "asunto": asunto.strip(),
-                        "filename": filename,
-                        "file_hash": file_hash,
-                        "file_path": file_path,
-                        "size": len(content)
+                        "files": downloaded_files
                     }
                 }
 

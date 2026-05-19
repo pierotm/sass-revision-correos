@@ -98,33 +98,58 @@ async def run_worker_cycle():
             db.add(notification)
             db.flush()
 
-            document = Document(
-                notification_id=notification.id,
-                filename=notif_data.get("filename"),
-                file_path=notif_data.get("file_path"),
-                file_hash=notif_data.get("file_hash")
-            )
-            db.add(document)
-            db.flush() # Ensure document gets an ID if needed
+            # Handle multiple files in result or fallback to single for backward compatibility
+            if "files" in notif_data:
+                files = notif_data["files"]
+            else:
+                files = [{
+                    "filename": notif_data.get("filename"),
+                    "file_path": notif_data.get("file_path"),
+                    "file_hash": notif_data.get("file_hash")
+                }]
+
+            documents_to_notify = []
+            for file_info in files:
+                if not file_info.get("file_hash"):
+                    continue
+                # Check for existing document hash to ensure idempotence
+                existing_doc = db.query(Document).filter(Document.file_hash == file_info["file_hash"]).first()
+                if existing_doc:
+                    logger.info(f"Document with hash {file_info['file_hash']} already exists. Skipping database insertion.")
+                    if not existing_doc.is_notified:
+                        documents_to_notify.append(existing_doc)
+                else:
+                    document = Document(
+                        notification_id=notification.id,
+                        filename=file_info["filename"],
+                        file_path=file_info["file_path"],
+                        file_hash=file_info["file_hash"]
+                    )
+                    db.add(document)
+                    documents_to_notify.append(document)
+            
+            db.flush() # Ensure documents get IDs
             
             # Delivery Phase
-            if not document.is_notified:
+            if documents_to_notify:
                 try:
-                    logger.info(f"Attempting to send email notification for {document.filename}...")
+                    file_paths = [doc.file_path for doc in documents_to_notify]
+                    logger.info(f"Attempting to send email notification with {len(file_paths)} attachments: {file_paths}...")
                     success = email_service.send_notification_email(
                         to_email=TARGET_EMAIL,
                         company_name=company.name,
                         ruc=company.ruc,
-                        file_path=document.file_path,
+                        file_paths=file_paths,
                         original_subject=notification.title
                     )
                     if success:
-                        document.is_notified = True
-                        document.notified_at = datetime.utcnow()
-                        logger.info("Email sent and document marked as notified.")
+                        for doc in documents_to_notify:
+                            doc.is_notified = True
+                            doc.notified_at = datetime.utcnow()
+                        logger.info("Email sent and all documents marked as notified.")
                 except Exception as e:
                     logger.error(f"Email delivery failed: {str(e)}")
-                    # We do not fail the cycle, just log it. The document remains is_notified=False.
+                    # We do not fail the cycle, just log it. The documents remain is_notified=False.
 
             company.last_checked_at = datetime.utcnow()
             worker_status.jobs_processed += 1
